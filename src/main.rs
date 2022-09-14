@@ -71,7 +71,7 @@ async fn main() -> io::Result<()> {
                     wrtr_command_write_handle.send("JOIN #utdlug".into()).await.unwrap();
                 }
                 cmd => {
-                    rdr_handle.clone().send(format!("{}\r\n", line)).await.unwrap();
+                    wrtr_command_write_handle.send(cmd.to_string()).await.unwrap();
                 },
             }
         } else {
