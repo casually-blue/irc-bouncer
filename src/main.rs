@@ -1,6 +1,6 @@
 use std::io;
 use inquire::Text;
-use tokio::io::{copy, split, stdin as tokio_stdin, stdout as tokio_stdout, AsyncWriteExt, AsyncReadExt};
+use tokio::io::{split, stdin as tokio_stdin, stdout as tokio_stdout, AsyncWriteExt, AsyncReadExt};
 
 mod tls_setup;
 use tls_setup::*;
@@ -22,32 +22,24 @@ async fn main() -> io::Result<()> {
 
     let (mut stdin, mut stdout) = (tokio_stdin(), tokio_stdout());
 
-    tokio::select! {
-        ret = copy(&mut reader, &mut stdout) => {
-            ret?;
-        },
-
-        _ = copy(&mut stdin, &mut writer) => {
-            while let Ok(line) = Text::new("COMMAND> ").prompt() {
-                if let Some('!') = line.chars().next() {
-                    match line.chars().skip(1).collect::<String>().as_ref() {
-                        "exit" => break,
-                        _ => {}
-                    }
-                } else {
-                    writer.write_all(format!("{}\r\n", line).as_bytes()).await?;
-                }
-
-                let mut text = Vec::new();
-                let _ = reader.read(&mut text).await?;
-                println!("{:?}", text);
-
-                let _ = stdout.write(&text).await?;
+    while let Ok(line) = Text::new("COMMAND> ").prompt() {
+        if let Some('!') = line.chars().next() {
+            match line.chars().skip(1).collect::<String>().as_ref() {
+                "exit" => break,
+                _ => {}
             }
-            writer.shutdown().await?
+        } else {
+            writer.write_all(format!("{}\r\n", line).as_bytes()).await?;
         }
 
+        let mut text = Vec::new();
+        let _ = reader.read(&mut text).await?;
+        println!("{:?}", text);
+
+        let _ = stdout.write(&text).await?;
     }
+
+    writer.shutdown().await?;
 
     Ok(())
 }
