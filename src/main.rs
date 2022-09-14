@@ -1,6 +1,6 @@
-use std::io;
 use inquire::Text;
-use tokio::io::{split, stdin as tokio_stdin, stdout as tokio_stdout, AsyncWriteExt, AsyncReadExt};
+use std::io::Write;
+use tokio::{io::{split, AsyncWriteExt, self, BufReader, AsyncBufReadExt}, spawn};
 
 mod tls_setup;
 use tls_setup::*;
@@ -20,26 +20,39 @@ async fn main() -> io::Result<()> {
     let stream = initialize_tls(options.host, options.port).await?;
     let (mut reader, mut writer) = split(stream);
 
-    let (mut stdin, mut stdout) = (tokio_stdin(), tokio_stdout());
+    let mut output = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open("output")?;
+
+    let task = spawn(async move {
+                let mut rdr = BufReader::new(&mut reader);
+                loop {
+                let mut data = String::new();
+                rdr.read_line(&mut data).await.unwrap();
+                if data.is_empty(){
+                    break;
+                }
+                write!(output, "{}", data).unwrap();
+            }
+            });
 
     while let Ok(line) = Text::new("COMMAND> ").prompt() {
         if let Some('!') = line.chars().next() {
             match line.chars().skip(1).collect::<String>().as_ref() {
                 "exit" => break,
-                _ => {}
+                "read" => {
+                },
+                _ => {},
             }
         } else {
-            writer.write_all(format!("{}\r\n", line).as_bytes()).await?;
+            writer.write_all(format!("{}\r\n", line).as_bytes()).await.unwrap();
+            
         }
-
-        let mut text = Vec::new();
-        let _ = reader.read(&mut text).await?;
-        println!("{:?}", text);
-
-        let _ = stdout.write(&text).await?;
     }
-
     writer.shutdown().await?;
+
+    task.await?;
 
     Ok(())
 }
