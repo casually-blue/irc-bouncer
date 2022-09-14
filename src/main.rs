@@ -1,6 +1,6 @@
 use inquire::Text;
 use std::io::Write;
-use tokio::{io::{split, AsyncWriteExt, self, BufReader, AsyncBufReadExt}, spawn};
+use tokio::{io::{split, AsyncWriteExt, self, BufReader, AsyncBufReadExt}, spawn, sync::mpsc::channel};
 
 mod tls_setup;
 use tls_setup::*;
@@ -20,39 +20,71 @@ async fn main() -> io::Result<()> {
     let stream = initialize_tls(options.host, options.port).await?;
     let (mut reader, mut writer) = split(stream);
 
+    let (rdr_handle,mut rdr_adapter) = channel(256);
+    let rdr_handle_messages_handle = rdr_handle.clone();
+    let (wrtr_command_handle, mut wrtr_adapter) = channel(256);
+
     let mut output = std::fs::OpenOptions::new()
         .append(true)
         .create(true)
         .open("output")?;
 
-    let task = spawn(async move {
-                let mut rdr = BufReader::new(&mut reader);
-                loop {
-                let mut data = String::new();
-                rdr.read_line(&mut data).await.unwrap();
-                if data.is_empty(){
-                    break;
-                }
-                write!(output, "{}", data).unwrap();
-            }
-            });
+    let reader_output_task = spawn(async move {
+        while let Some(message) = rdr_adapter.recv().await {
+            write!(output, "{}", message).unwrap();
+        }
+    });
+
+    let reader_handle_messages_task = spawn(async move {
+        let mut rdr = BufReader::new(&mut reader);
+        let wrtr_handle = wrtr_command_handle.clone();
+        loop {
+            let mut data = String::new();
+            rdr.read_line(&mut data).await.unwrap();
+            if data.is_empty(){
+                break;
+            } else if data.starts_with("PING") {
+                wrtr_handle.send(data.chars().skip(5).collect::<String>()).await.unwrap();
+            } 
+
+            rdr_handle_messages_handle.send(data).await.unwrap();
+        }
+    });
 
     while let Ok(line) = Text::new("COMMAND> ").prompt() {
         if let Some('!') = line.chars().next() {
             match line.chars().skip(1).collect::<String>().as_ref() {
                 "exit" => break,
-                "read" => {
+                cmd => {
+                    rdr_handle.clone().send(format!("{}\r\n", line)).await.unwrap();
+                    writer.write_all(format!("{}\r\n", cmd).as_bytes()).await.unwrap();        
                 },
-                _ => {},
             }
         } else {
-            writer.write_all(format!("{}\r\n", line).as_bytes()).await.unwrap();
-            
+            rdr_handle.clone().send(format!("{}\r\n", line)).await.unwrap();
+            writer.write_all(format!("PRIVMSG #utdlug :{}\r\n", line).as_bytes()).await.unwrap();
         }
+
+        loop {
+            match wrtr_adapter.try_recv() {
+                Ok(cmd) => {
+                    writer.write_all(format!("{}\r\n", cmd).as_bytes()).await.unwrap();
+                    rdr_handle.clone().send(format!("{}\r\n", cmd)).await.unwrap();
+                },
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    break
+                }
+                _ => {
+                    break
+                }
+            }
+        }
+
     }
     writer.shutdown().await?;
 
-    task.await?;
+    reader_handle_messages_task.await?;
+    reader_output_task.await?;
 
     Ok(())
 }
