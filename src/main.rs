@@ -22,7 +22,9 @@ async fn main() -> io::Result<()> {
 
     let (rdr_handle,mut rdr_adapter) = channel(256);
     let rdr_handle_messages_handle = rdr_handle.clone();
+    let rdr_handle_write_handle = rdr_handle.clone();
     let (wrtr_command_handle, mut wrtr_adapter) = channel(256);
+    let wrtr_command_write_handle = wrtr_command_handle.clone();
 
     let mut output = std::fs::OpenOptions::new()
         .append(true)
@@ -44,10 +46,18 @@ async fn main() -> io::Result<()> {
             if data.is_empty(){
                 break;
             } else if data.starts_with("PING") {
-                wrtr_handle.send(data.chars().skip(5).collect::<String>()).await.unwrap();
+                wrtr_handle.send(format!("PONG {}", data.chars().skip(5).collect::<String>())).await.unwrap();
             } 
 
             rdr_handle_messages_handle.send(data).await.unwrap();
+        }
+    });
+
+    let writer_handle_messages_task = spawn(async move {
+        while let Some(cmd) = wrtr_adapter.recv().await {
+                    writer.write_all(format!("{}\r\n", cmd).as_bytes()).await.unwrap();
+                    rdr_handle_write_handle.send(format!("{}\r\n", cmd)).await.unwrap();
+                
         }
     });
 
@@ -55,36 +65,25 @@ async fn main() -> io::Result<()> {
         if let Some('!') = line.chars().next() {
             match line.chars().skip(1).collect::<String>().as_ref() {
                 "exit" => break,
+                "lug" => {
+                    wrtr_command_write_handle.send("USER casuallyblue test test :Sierra".into()).await.unwrap();
+                    wrtr_command_write_handle.send("NICK casuallyb_".into()).await.unwrap();
+                    wrtr_command_write_handle.send("JOIN #utdlug".into()).await.unwrap();
+                }
                 cmd => {
                     rdr_handle.clone().send(format!("{}\r\n", line)).await.unwrap();
-                    writer.write_all(format!("{}\r\n", cmd).as_bytes()).await.unwrap();        
                 },
             }
         } else {
-            rdr_handle.clone().send(format!("{}\r\n", line)).await.unwrap();
-            writer.write_all(format!("PRIVMSG #utdlug :{}\r\n", line).as_bytes()).await.unwrap();
+            wrtr_command_write_handle.send(format!("PRIVMSG #utdlug :{}", line)).await.unwrap();
         }
 
-        loop {
-            match wrtr_adapter.try_recv() {
-                Ok(cmd) => {
-                    writer.write_all(format!("{}\r\n", cmd).as_bytes()).await.unwrap();
-                    rdr_handle.clone().send(format!("{}\r\n", cmd)).await.unwrap();
-                },
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                    break
-                }
-                _ => {
-                    break
-                }
-            }
-        }
-
+        
     }
-    writer.shutdown().await?;
 
     reader_handle_messages_task.await?;
     reader_output_task.await?;
+    writer_handle_messages_task.await?;
 
     Ok(())
 }
