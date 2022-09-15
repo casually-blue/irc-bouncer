@@ -1,0 +1,23 @@
+warning: unused import: `inquire::Text`
+ --> src/main.rs:3:5
+  |
+3 | use inquire::Text;
+  |     ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: variable does not need to be mutable
+  --> src/main.rs:39:9
+   |
+39 |     let mut content = TextContent::new("");
+   |         ----^^^^^^^
+   |         |
+   |         help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` on by default
+
+warning: `bouncer` (bin "bouncer") generated 2 warnings
+    Finished dev [unoptimized + debuginfo] target(s) in 0.19s
+     Running `target/debug/bouncer irc.oftc.net`
+thread 'tokio-runtime-worker' panicked at 'Cannot start a runtime from within a runtime. This happens because a function (like `block_on`) attempted to block the current thread while the thread is being used to drive asynchronous tasks.', src/main.rs:67:58
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

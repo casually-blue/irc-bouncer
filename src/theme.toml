@@ -1,0 +1,12 @@
+[colors]
+background = "#002b36"
+view = "#073642"
+primary = "#586e75"
+secondary = "#657b83"
+tertiary = "#839496"
+
+title_primary = "#6c71c4"
+title_secondary = "#93a1a1"
+
+highlight = "#b58900"
+highlight_inactive = ""
