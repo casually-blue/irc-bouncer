@@ -1,9 +1,13 @@
+use std::{cell::RefCell, rc::Rc, time::Duration};
+
 use clap::Parser;
+use crossterm::event::{KeyEvent, KeyCode};
 use inquire::Text;
 use tokio::{io::{split, AsyncWriteExt, self, BufReader, AsyncBufReadExt}, sync::mpsc::{channel, Sender, Receiver}, task};
 
 mod tls_setup;
 use tls_setup::*;
+use tui::{backend::{CrosstermBackend, Backend}, Terminal, layout::{Layout, Direction, Constraint, Alignment}, Frame, widgets::{Paragraph, Borders, Block, BorderType}, style::{Style, Color}};
 
 #[derive(Parser)]
 struct Options {
@@ -13,9 +17,14 @@ struct Options {
     port: u16,
 }
 
+pub struct App {
+
+}
+
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let options = Options::parse();
+
 
     let stream = initialize_tls(options.host, options.port).await?;
 
@@ -25,10 +34,14 @@ async fn main() -> io::Result<()> {
     let reader_handle_client_messages = reader_handle.clone();
     let reader_handle_copy_tls = reader_handle.clone();
 
-    let (wrtr_command_handle, mut wrtr_adapter) = channel(256);
+    let (wrtr_command_handle, mut wrtr_adapter): (Sender<String>, Receiver<String>) = channel(256);
     let wrtr_command_write_handle = wrtr_command_handle.clone();
 
     tokio::select!(
+        _ = task::spawn(async move {
+            let app = Rc::new(RefCell::new(App {}));
+            start_ui(app).unwrap();
+        }) => {},
         _ = task::spawn(async move {
             let mut output = tokio::fs::OpenOptions::new()
                 .append(true)
@@ -63,6 +76,7 @@ async fn main() -> io::Result<()> {
 
             }
         }) => {},
+        /*
         _ = async {
             while let Ok(line) = Text::new("COMMAND> ").prompt() {
                 if let Some('!') = line.chars().next() {
@@ -83,7 +97,68 @@ async fn main() -> io::Result<()> {
 
 
             }
-        } => {});
+        } => {}*/);
 
     Ok(())
+}
+
+pub fn start_ui(app: Rc<RefCell<App>>) -> io::Result<()> {
+    let stdout = std::io::stdout();
+    crossterm::terminal::enable_raw_mode()?;
+    let backend = CrosstermBackend::new(stdout);
+
+    let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
+    terminal.hide_cursor()?;
+
+    loop {
+        let app = app.borrow();
+        terminal.draw(|rect| draw(rect, &app))?;
+
+        if crossterm::event::poll(Duration::from_millis(200))? {
+            match crossterm::event::read()? {
+                crossterm::event::Event::Key(k) => {
+                    if k.code == KeyCode::Esc {
+                        break
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    terminal.clear()?;
+    terminal.show_cursor()?;
+    crossterm::terminal::disable_raw_mode()?;
+    Ok(())
+}
+
+pub fn draw<B>(rect: &mut Frame<B>, _app: &App)
+where
+    B: Backend,
+{
+    let size = rect.size();
+    // TODO check size
+
+    // Vertical layout
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3)].as_ref())
+        .split(size);
+
+    // Title block
+    let title = draw_title();
+    rect.render_widget(title, chunks[0]);
+}
+
+fn draw_title<'a>() -> Paragraph<'a> {
+    Paragraph::new("IRC Client")
+        .style(Style::default().fg(Color::LightCyan))
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .style(Style::default().fg(Color::White))
+                .border_type(BorderType::Plain),
+        )
 }
