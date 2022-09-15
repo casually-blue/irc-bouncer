@@ -1,89 +1,89 @@
+use clap::Parser;
 use inquire::Text;
-use std::io::Write;
-use tokio::{io::{split, AsyncWriteExt, self, BufReader, AsyncBufReadExt}, spawn, sync::mpsc::channel};
+use tokio::{io::{split, AsyncWriteExt, self, BufReader, AsyncBufReadExt}, sync::mpsc::{channel, Sender, Receiver}, task};
 
 mod tls_setup;
 use tls_setup::*;
 
+#[derive(Parser)]
 struct Options {
     host: String,
+
+    #[clap(default_value_t=6697)]
     port: u16,
 }
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let options = Options {
-        host: "irc.oftc.net".into(),
-        port: 6697,
-    };
+    let options = Options::parse();
 
     let stream = initialize_tls(options.host, options.port).await?;
-    let (mut reader, mut writer) = split(stream);
 
-    let (rdr_handle,mut rdr_adapter) = channel(256);
-    let rdr_handle_messages_handle = rdr_handle.clone();
-    let rdr_handle_write_handle = rdr_handle.clone();
+    let (mut tls_read_side, mut tls_write_side) = split(stream);
+
+    let (reader_handle, mut reader_output_channel): (Sender<String>, Receiver<String>) = channel(256);
+    let reader_handle_client_messages = reader_handle.clone();
+    let reader_handle_copy_tls = reader_handle.clone();
+
     let (wrtr_command_handle, mut wrtr_adapter) = channel(256);
     let wrtr_command_write_handle = wrtr_command_handle.clone();
 
-    let mut output = std::fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open("output")?;
+    tokio::select!(
+        _ = task::spawn(async move {
+            let mut output = tokio::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open("output").await.unwrap();
 
-    let reader_output_task = spawn(async move {
-        while let Some(message) = rdr_adapter.recv().await {
-            write!(output, "{}", message).unwrap();
-        }
-    });
-
-    let reader_handle_messages_task = spawn(async move {
-        let mut rdr = BufReader::new(&mut reader);
-        let wrtr_handle = wrtr_command_handle.clone();
-        loop {
-            let mut data = String::new();
-            rdr.read_line(&mut data).await.unwrap();
-            if data.is_empty(){
-                break;
-            } else if data.starts_with("PING") {
-                wrtr_handle.send(format!("PONG {}", data.chars().skip(5).collect::<String>())).await.unwrap();
-            } 
-
-            rdr_handle_messages_handle.send(data).await.unwrap();
-        }
-    });
-
-    let writer_handle_messages_task = spawn(async move {
-        while let Some(cmd) = wrtr_adapter.recv().await {
-                    writer.write_all(format!("{}\r\n", cmd).as_bytes()).await.unwrap();
-                    rdr_handle_write_handle.send(format!("{}\r\n", cmd)).await.unwrap();
-                
-        }
-    });
-
-    while let Ok(line) = Text::new("COMMAND> ").prompt() {
-        if let Some('!') = line.chars().next() {
-            match line.chars().skip(1).collect::<String>().as_ref() {
-                "exit" => break,
-                "lug" => {
-                    wrtr_command_write_handle.send("USER casuallyblue test test :Sierra".into()).await.unwrap();
-                    wrtr_command_write_handle.send("NICK casuallyb_".into()).await.unwrap();
-                    wrtr_command_write_handle.send("JOIN #utdlug".into()).await.unwrap();
-                }
-                cmd => {
-                    wrtr_command_write_handle.send(cmd.to_string()).await.unwrap();
-                },
+            while let Some(message) = reader_output_channel.recv().await {
+                output.write_all(message.as_bytes()).await.unwrap();
             }
-        } else {
-            wrtr_command_write_handle.send(format!("PRIVMSG #utdlug :{}", line)).await.unwrap();
-        }
+        }) => {},
 
-        
-    }
+        _ = task::spawn(async move {
+            let mut reader = BufReader::new(&mut tls_read_side);
+            let wrtr_handle = wrtr_command_handle.clone();
+            loop {
+                let mut data = String::new();
+                reader.read_line(&mut data).await.unwrap();
+                if data.is_empty(){
+                    break;
+                } else if data.starts_with("PING") {
+                    wrtr_handle.send(format!("PONG {}", data.chars().skip(5).collect::<String>()).trim().into()).await.unwrap();
+                } 
 
-    reader_handle_messages_task.await?;
-    reader_output_task.await?;
-    writer_handle_messages_task.await?;
+                reader_handle_client_messages.send(data).await.unwrap();
+            }
+        }) => {},
+
+        _ = task::spawn(async move {
+            while let Some(cmd) = wrtr_adapter.recv().await {
+                tls_write_side.write_all(format!("{}\r\n", cmd).as_bytes()).await.unwrap();
+                reader_handle_copy_tls.send(format!("{}\r\n", cmd)).await.unwrap();
+
+            }
+        }) => {},
+        _ = async {
+            while let Ok(line) = Text::new("COMMAND> ").prompt() {
+                if let Some('!') = line.chars().next() {
+                    match line.chars().skip(1).collect::<String>().as_ref() {
+                        "exit" => break,
+                        "lug" => {
+                            wrtr_command_write_handle.send("USER casuallyblue test test :Sierra".into()).await.unwrap();
+                            wrtr_command_write_handle.send("NICK casuallyblue".into()).await.unwrap();
+                            wrtr_command_write_handle.send("JOIN #utdlug".into()).await.unwrap();
+                        }
+                        cmd => {
+                            wrtr_command_write_handle.send(cmd.to_string()).await.unwrap();
+                        },
+                    }
+                } else {
+                    wrtr_command_write_handle.send(format!("PRIVMSG #utdlug :{}", line)).await.unwrap();
+                }
+
+
+            }
+        } => {});
 
     Ok(())
 }
